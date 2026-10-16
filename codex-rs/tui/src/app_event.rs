@@ -1166,6 +1166,10 @@ pub(crate) enum AppEvent {
     FollowTranscript,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
+    /// Refresh the displayed thread's persisted heartbeat state, including while idle.
+    RefreshHeartbeatStatus {
+        connected: bool,
+    },
     /// FIFO barrier after the completed turn's history insertions.
     TurnTipReady {
         thread_id: ThreadId,

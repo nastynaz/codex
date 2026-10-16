@@ -79,6 +79,7 @@ impl App {
                     | AppEvent::ConfirmDaemonUpdate(_)
                     | AppEvent::RunDaemonUpdate(_)
                     | AppEvent::InsertHistoryCell(_)
+                    | AppEvent::RefreshHeartbeatStatus { .. }
                     | AppEvent::CommitRealtimeTranscriptHistory
                     | AppEvent::ResetTranscriptForThreadSwitch
                     | AppEvent::ResetTranscriptForThreadSwitchPreservingScreen
@@ -910,6 +911,13 @@ impl App {
             }
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
+            }
+            AppEvent::RefreshHeartbeatStatus { connected } => {
+                let indicator = self.current_displayed_thread_id().and_then(|thread| {
+                    crate::heartbeat::Store::new(&self.config.codex_home)
+                        .indicator(&thread.to_string(), connected && !self.reconnect.offline)
+                });
+                self.chat_widget.set_heartbeat_indicator(indicator);
             }
             AppEvent::TurnTipReady { thread_id, turn_id } => {
                 self.turn_tips.ready(thread_id, &turn_id, self.transcript_cells.last());

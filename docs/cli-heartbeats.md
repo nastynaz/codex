@@ -7,6 +7,20 @@ active schedules. The machine must be awake. `--no-daemon`, remote connections,
 untrusted projects and managed configurations disabling local automation do not
 advertise the tool.
 
+The displayed thread's saved heartbeat appears in a bright cyan row below the
+composer (`Heartbeat · every 5m` or `Heartbeat · one-shot`). Paused and failed
+schedules are yellow; a disconnected client is grey. The row disappears when
+the schedule is deleted, including after one-shot acceptance. It refreshes while
+idle and after resuming a thread, independently of `/statusline` configuration.
+
+The shared `$loop` skill's creation fields match this tool. Use the available
+host's automation tool (`codex_tui.automation_update` in this terminal client),
+discovering its schema directly. No documentation lookup is needed to create a
+schedule. CLI cadence is limited to minute/hour intervals; calendar rules are
+not supported. Use `mode=update` with `status=PAUSED` or `ACTIVE` to pause or resume.
+On completion, explicitly delete the schedule and rename the current thread
+`done: <name>`; the scheduler also recognizes that title at its next due tick.
+
 Ask for a loop in ordinary language, or use the existing `$loop` skill. For example:
 “Check this task every five minutes until the build finishes, then stop the loop.”
 The agent uses `codex_tui.automation_update`; the calling thread is supplied by the
@@ -115,7 +129,7 @@ a fresh package:
 just test -p codex-tui -p codex-core --lib \
   -E 'test(heartbeat) | test(steer_preserves_request_origin) | test(client_mcp_rebinding) | test(local_daemon_registers_approval_gated)'
 just test -p codex-app-server -p codex-core --test all \
-  -E 'test(turn_heartbeat) | test(turn_start_if_idle) | test(automatic_plan_rejections) | test(legacy_permission_profile_requests_fail_closed)'
+  -E 'test(turn_heartbeat) | test(turn_start_if_idle) | test(automatic_plan_rejections) | test(legacy_permission_profile_requests_fail_closed) | test(responses_lite::base_instructions_use_input_items)'
 ```
 
 These cover persistence, concurrent clients, crash/timeout recovery, the MCP tool
@@ -125,3 +139,12 @@ live model behaviour. After installation, exercise a disposable thread with a
 one-minute schedule, check that a heartbeat appears in its history, then delete
 the schedule. Repeat after closing and reopening the TUI to check the installed
 package and daemon together.
+
+The fork omits `content_item_metadata` from outgoing model requests, including
+Responses Lite. Deployed WebSocket ingress can reject that field with an
+`Invalid response.create payload` error even when the model advertises Responses
+Lite support. Provenance remains in local history. Keep this compatibility filter
+until the deployed backend accepts the field; mocked request tests alone cannot
+establish that support. Verify a live ordinary turn and a scheduled turn before
+replacing a shared daemon, since all clients using that daemon share its request
+serialization behavior.

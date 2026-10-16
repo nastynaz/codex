@@ -1954,6 +1954,13 @@ impl ChatWidget {
         self.thread_id
     }
 
+    pub(crate) fn set_heartbeat_indicator(
+        &mut self,
+        indicator: Option<crate::heartbeat::Indicator>,
+    ) {
+        self.bottom_pane.set_heartbeat_indicator(indicator);
+    }
+
     pub(crate) fn thread_name(&self) -> Option<String> {
         self.thread_name.clone()
     }

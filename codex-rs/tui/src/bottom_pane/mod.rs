@@ -20,6 +20,8 @@
 //! drafts, paste bursts, and active dialogs keep their normal input routing.
 //! Owned transcripts separate activity from the transcript and reserve their shared hint row
 //! below activity and previews, above the composer.
+//! A saved heartbeat has a dedicated row below the composer, independent of the configured
+//! status line. The scheduler refreshes its state even while the conversation is idle.
 pub(crate) use chat_composer::CommandPopupPlacement;
 pub(crate) use chat_composer::ComposerRenderOptions;
 pub(crate) use chat_composer::TranscriptFooter;
@@ -327,6 +329,7 @@ pub(crate) struct BottomPane {
     /// When a status row exists, this summary is mirrored inline in that row;
     /// when no status row exists, it renders as its own footer row.
     unified_exec_footer: UnifiedExecFooter,
+    heartbeat_indicator: Option<crate::heartbeat::Indicator>,
     /// Preview of pending steers and queued drafts shown above the composer.
     pending_input_preview: PendingInputPreview,
     /// Inactive threads with pending approval requests.
@@ -403,6 +406,7 @@ impl BottomPane {
             inline_banner: None,
             status_timer: crate::status_indicator_widget::StatusTimer::default(),
             unified_exec_footer: UnifiedExecFooter::new(),
+            heartbeat_indicator: None,
             pending_input_preview: PendingInputPreview::new(),
             pending_thread_approvals: PendingThreadApprovals::new(),
             esc_backtrack_hint: false,
@@ -2518,6 +2522,12 @@ impl BottomPane {
                 }))
             };
             flex2.push(/*flex*/ 0, composer);
+            if let Some(indicator) = &self.heartbeat_indicator {
+                flex2.push(
+                    /*flex*/ 0,
+                    RenderableItem::Owned(Box::new(Paragraph::new(indicator.line()))),
+                );
+            }
             RenderableItem::Owned(Box::new(flex2))
         }
     }
@@ -2534,6 +2544,16 @@ impl BottomPane {
 
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
         if self.composer.set_status_line(status_line) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_heartbeat_indicator(
+        &mut self,
+        indicator: Option<crate::heartbeat::Indicator>,
+    ) {
+        if self.heartbeat_indicator != indicator {
+            self.heartbeat_indicator = indicator;
             self.request_redraw();
         }
     }
@@ -2668,6 +2688,35 @@ mod tests {
         let mut buf = Buffer::empty(area);
         pane.render(area, &mut buf);
         snapshot_buffer(&buf)
+    }
+
+    #[test]
+    fn heartbeat_footer_stays_visible_while_idle_or_working_and_clears_on_delete() {
+        let (tx, _rx) = unbounded_channel();
+        let mut pane = test_pane(AppEventSender::new(tx));
+        pane.set_heartbeat_indicator(Some(crate::heartbeat::Indicator::Active {
+            interval_seconds: 60,
+            repeat: true,
+        }));
+        for running in [false, true] {
+            pane.set_task_running(running);
+            for width in [24, 80] {
+                let area = Rect::new(0, 0, width, pane.desired_height(width));
+                let mut buffer = Buffer::empty(area);
+                pane.render(area, &mut buffer);
+                let text = snapshot_buffer(&buffer);
+                assert!(text.contains("Heartbeat"), "{text}");
+                assert!(buffer.content.iter().any(|cell| {
+                    cell.symbol() == "H" && cell.fg == ratatui::style::Color::LightCyan
+                }));
+            }
+        }
+        pane.set_heartbeat_indicator(Some(crate::heartbeat::Indicator::Paused));
+        let area = Rect::new(0, 0, 80, pane.desired_height(80));
+        assert!(render_snapshot(&pane, area).contains("Heartbeat paused"));
+        pane.set_heartbeat_indicator(None);
+        let area = Rect::new(0, 0, 80, pane.desired_height(80));
+        assert!(!render_snapshot(&pane, area).contains("Heartbeat"));
     }
 
     pub(super) fn test_pane(app_event_tx: AppEventSender) -> BottomPane {

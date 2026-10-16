@@ -106,6 +106,14 @@ impl Store {
         threads.sort();
         Ok(threads)
     }
+
+    pub(super) fn has_schedule(&self, thread: &str) -> Result<bool, String> {
+        uuid::Uuid::parse_str(thread).map_err(|e| e.to_string())?;
+        self.root
+            .join(format!("{thread}.json"))
+            .try_exists()
+            .map_err(|e| e.to_string())
+    }
 }
 
 impl LockedSchedule {

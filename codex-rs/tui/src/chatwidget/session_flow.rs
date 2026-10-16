@@ -71,6 +71,9 @@ impl ChatWidget {
         let previous_thread_id = self.thread_id;
         let connector_scope_changed = previous_thread_id != Some(session.thread_id)
             || self.config.cwd.as_path() != session.cwd.as_path();
+        if self.thread_id != Some(session.thread_id) {
+            self.bottom_pane.set_heartbeat_indicator(None);
+        }
         self.thread_id = Some(session.thread_id);
         self.daybreak_enabled = self.config.features.enabled(Feature::CliDaybreak)
             && session.daybreak_enabled

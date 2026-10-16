@@ -29,6 +29,74 @@ fn saved(store: &Store) -> store::Schedule {
 }
 
 #[test]
+fn heartbeat_indicator_tracks_persisted_lifecycle_and_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path());
+    assert_eq!(store.indicator(THREAD, true), None);
+    assert!(!directory.path().join("cli-heartbeats").exists());
+    create(&store);
+    let reopened = Store::new(directory.path());
+    assert_eq!(
+        reopened.indicator(THREAD, true),
+        Some(Indicator::Active {
+            interval_seconds: 300,
+            repeat: true
+        })
+    );
+    assert_eq!(
+        reopened.indicator(&uuid::Uuid::new_v4().to_string(), true),
+        None
+    );
+    assert_eq!(
+        store.indicator(THREAD, false),
+        Some(Indicator::Disconnected)
+    );
+    {
+        let _dispatch_lock = store.lock(THREAD).unwrap().unwrap();
+        assert_eq!(
+            reopened.indicator(THREAD, true),
+            Some(Indicator::Dispatching)
+        );
+    }
+    tool::execute(
+        &store,
+        THREAD,
+        json!({"mode":"update","status":"PAUSED"}),
+        1100,
+    )
+    .unwrap();
+    assert_eq!(reopened.indicator(THREAD, true), Some(Indicator::Paused));
+    tool::execute(
+        &store,
+        THREAD,
+        json!({"mode":"update","status":"ACTIVE","repeat":false}),
+        1101,
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.indicator(THREAD, true),
+        Some(Indicator::Active {
+            interval_seconds: 300,
+            repeat: false
+        })
+    );
+    std::fs::write(
+        directory
+            .path()
+            .join("cli-heartbeats")
+            .join(format!("{THREAD}.json")),
+        "broken",
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.indicator(THREAD, true),
+        Some(Indicator::NeedsAttention)
+    );
+    tool::execute(&store, THREAD, json!({"mode":"delete"}), 1102).unwrap();
+    assert_eq!(reopened.indicator(THREAD, true), None);
+}
+
+#[test]
 fn heartbeat_tool_lifecycle_is_persistent_and_scoped() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::new(directory.path());

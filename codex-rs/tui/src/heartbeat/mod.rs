@@ -1,5 +1,6 @@
 //! Client-owned heartbeats. Dropping the bridge stops its timer; schedule files survive.
 mod dispatch;
+mod indicator;
 mod store;
 mod tool;
 
@@ -7,6 +8,7 @@ use crate::app_event::AppEvent;
 use crate::dynamic_tools_mcp::ToolConnection;
 use codex_features::Features;
 use dispatch::Outcome;
+pub(crate) use indicator::Indicator;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
@@ -18,11 +20,15 @@ use tokio::task::JoinHandle;
 
 pub(crate) struct Scheduler {
     task: JoinHandle<()>,
+    status_task: Option<JoinHandle<()>>,
 }
 
 impl Drop for Scheduler {
     fn drop(&mut self) {
         self.task.abort();
+        if let Some(task) = &self.status_task {
+            task.abort();
+        }
     }
 }
 
@@ -50,6 +56,28 @@ impl Store {
         features: Features,
         mcp_config: Value,
     ) -> Scheduler {
+        // Refresh independently of dispatch, which can wait up to 30 seconds.
+        // The app reads only the displayed thread and redraws only on changes.
+        let status_events = connection
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|(_, events)| events.clone());
+        let status_connection = connection.clone();
+        let status_task = status_events.map(|events| {
+            tokio::spawn(async move {
+                let mut timer = tokio::time::interval(Duration::from_secs(1));
+                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    timer.tick().await;
+                    let connected = status_connection
+                        .read()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .is_some();
+                    events.send(AppEvent::RefreshHeartbeatStatus { connected });
+                }
+            })
+        });
         let store = self.clone();
         let task = tokio::spawn(async move {
             let mut timer = tokio::time::interval(Duration::from_secs(1));
@@ -105,7 +133,7 @@ impl Store {
                 }
             }
         });
-        Scheduler { task }
+        Scheduler { task, status_task }
     }
 }
 

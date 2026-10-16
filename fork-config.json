@@ -1,0 +1,9 @@
+{
+  "repository": "nastynaz/codex",
+  "branch": "fork-main",
+  "upstream_repository": "openai/codex",
+  "upstream_base": "1b6e0d8145e1fe5b2663d32fbe7ee02f51a10e1c",
+  "upstream_tag": null,
+  "smoke_model": "gpt-5.6-sol",
+  "target": "aarch64-apple-darwin"
+}

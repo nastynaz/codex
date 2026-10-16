@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Human and agent entry point; stable JSON results, diagnostics on stderr."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fork_manager.cli import main
+
+raise SystemExit(main())

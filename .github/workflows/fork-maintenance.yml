@@ -1,0 +1,99 @@
+name: Fork maintenance
+
+on:
+  schedule:
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: fork-maintenance
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.repository == 'nastynaz/codex'
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: fork-main
+          fetch-depth: 0
+      - name: Configure maintenance identity
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/codex-fork-target" >> "$GITHUB_ENV"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Test maintenance commands
+        run: python3 -m unittest discover -s scripts/fork_manager -p 'test_*.py'
+      - name: Prepare latest stable release
+        id: sync
+        run: |
+          python3 scripts/codex-fork sync --ci-in-place > "$RUNNER_TEMP/fork-sync.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result=json.loads((Path(os.environ['RUNNER_TEMP'])/'fork-sync.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+              output.write('status='+result['status']+'\n')
+          PY
+      - name: Install Rust and protocol compiler
+        if: steps.sync.outputs.status == 'candidate_ready'
+        run: |
+          rustup show active-toolchain
+          command -v protoc || brew install protobuf
+        working-directory: codex-rs
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
+        if: steps.sync.outputs.status == 'candidate_ready'
+        with:
+          tool: cargo-nextest
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        if: steps.sync.outputs.status == 'candidate_ready'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/codex-fork-target
+          key: heartbeat-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('codex-rs/rust-toolchain.toml', 'codex-rs/Cargo.lock') }}
+          restore-keys: heartbeat-${{ runner.os }}-${{ runner.arch }}-
+      - name: Check candidate
+        if: steps.sync.outputs.status == 'candidate_ready'
+        run: python3 scripts/codex-fork check > "$RUNNER_TEMP/fork-checks.json"
+      - name: Advance maintained source only after checks
+        if: steps.sync.outputs.status == 'candidate_ready'
+        run: git push origin HEAD:refs/heads/fork-main
+      - name: Record failure diagnostics
+        if: failure()
+        run: |
+          git status --short > "$RUNNER_TEMP/fork-status.txt"
+          git diff --cc > "$RUNNER_TEMP/fork-conflicts.patch"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          url=f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          body=f"The daily stable-release integration did not pass. The maintained branch and installed Codex were not intentionally advanced.\n\nInspect the [workflow log and diagnostics]({url}). Reproduce locally with `codex-fork sync`, resolve the retained candidate, then run `codex-fork check --source PATH`. Installation remains manual.\n\nReview pointers: [maintenance guide](docs/fork-maintenance.md).\n"
+          (Path(os.environ['RUNNER_TEMP'])/'fork-issue.md').write_text(body)
+          PY
+          issue=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search '"Fork maintenance needs attention" in:title' --json number,title --jq '.[] | select(.title == "Fork maintenance needs attention") | .number' | head -1)
+          if [ -n "$issue" ]; then
+            gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/fork-issue.md"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title 'Fork maintenance needs attention' --body-file "$RUNNER_TEMP/fork-issue.md"
+          fi
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fork-maintenance
+          path: ${{ runner.temp }}/fork-*
+          if-no-files-found: ignore

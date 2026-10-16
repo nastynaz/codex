@@ -133,7 +133,7 @@ async fn base_instructions_use_input_items(responses_lite: bool) -> Result<()> {
             .as_str()
             .is_some_and(|id| id.starts_with("msg_"))
     );
-    let mut expected_instructions = serde_json::json!({
+    let expected_instructions = serde_json::json!({
         "id": instructions["id"],
         "type": "message",
         "role": "developer",
@@ -145,9 +145,13 @@ async fn base_instructions_use_input_items(responses_lite: bool) -> Result<()> {
             "content_item_kinds": ["model.base_instructions"],
         },
     });
-    if responses_lite {
-        expected_instructions["internal_chat_message_metadata_passthrough"]["content_item_metadata"] =
-            serde_json::json!([{"provenance": {"type": "harness", "hook": false}}]);
+    for item in input {
+        assert!(
+            item.get("internal_chat_message_metadata_passthrough")
+                .and_then(|metadata| metadata.get("content_item_metadata"))
+                .is_none(),
+            "outgoing requests must omit unsupported per-content attribution: {item}"
+        );
     }
     assert_eq!(instructions, &expected_instructions);
 

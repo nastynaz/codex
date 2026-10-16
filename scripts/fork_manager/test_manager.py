@@ -239,6 +239,46 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD"), before)
         self.assertIn("<<<<<<<", (Path(result["worktree"]) / "file").read_text())
 
+    def test_build_stamps_only_its_worktree_and_binds_receipt_to_package(self):
+        cfg_path = self.repo / "fork-config.json"
+        cfg = json.loads(cfg_path.read_text())
+        cfg.update(upstream_tag="rust-v1.0.0", target="aarch64-apple-darwin")
+        cfg_path.write_text(json.dumps(cfg))
+        (self.repo / "codex-rs").mkdir()
+        manifest = self.repo / "codex-rs/Cargo.toml"
+        manifest.write_text('[workspace.package]\nversion = "1.0.0"\n')
+        (self.repo / "scripts").mkdir()
+        # Exercise the subprocess builder interface without invoking Rust in this unit test.
+        (self.repo / "scripts/build_codex_package.py").write_text("""
+import argparse, pathlib, json, tomllib
+p=argparse.ArgumentParser()
+p.add_argument('--package-dir', type=pathlib.Path)
+p.add_argument('--cargo-profile')
+p.add_argument('--target')
+a=p.parse_args()
+version=tomllib.loads(pathlib.Path('codex-rs/Cargo.toml').read_text())['workspace']['package']['version']
+(a.package_dir/'bin').mkdir(parents=True)
+(a.package_dir/'codex-package.json').write_text(json.dumps({'version':version}))
+cli=a.package_dir/'bin/codex'
+cli.write_text('#!/bin/sh\\necho codex-cli '+version+'\\n')
+cli.chmod(0o755)
+""")
+        self.git(
+            "add",
+            "fork-config.json",
+            "codex-rs/Cargo.toml",
+            "scripts/build_codex_package.py",
+        )
+        self.git("commit", "-m", "package fixture")
+        with patch.object(packages, "check", return_value={"status": "checks_passed"}):
+            result = packages.build(self.repo, profile="dev")
+        self.assertTrue(result["version"].startswith("1.0.0-naz."))
+        self.assertIn('version = "1.0.0"', manifest.read_text())
+        receipt = packages.verify_receipt(Path(result["package"]), live=False)
+        self.assertEqual(receipt["version"], result["version"])
+        self.assertFalse(receipt["live_passed"])
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
     def test_dirty_worktree_and_non_release_tags_are_rejected(self):
         with self.assertRaises(Failure):
             source.prepare(self.repo, "rust-v1.0.0", in_place=True)

@@ -22,7 +22,8 @@ gh repo fork openai/codex --fork-name codex --clone=false --remote=false
 codex-fork publish
 ```
 
-`publish` verifies the repository is your fork, normally pushes `fork-main`, sets
+`publish` verifies the repository is your fork, runs the source checks, normally
+pushes `fork-main`, sets
 it as the default branch, enables issues, disables inherited upstream workflows,
 and enables/dispatches only `fork-maintenance.yml`. It does not change the main
 Codex launcher, daemon, login or configuration. It needs GitHub repo/workflow
@@ -50,7 +51,8 @@ codex-fork status
 codex-fork update
 ```
 
-`update` fetches the maintained branch into a separate worktree, runs checks,
+`update` fetches the maintained branch, fast-forwards the clean management
+checkout (refusing local divergence), creates a separate build worktree, runs checks,
 builds a complete release package, and runs an isolated live model/TUI test.
 It leaves your current installation running. The live test creates a one-minute
 one-shot, reopens its TUI, checks the cyan footer and delivery, then verifies

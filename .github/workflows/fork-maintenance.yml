@@ -1,6 +1,8 @@
 name: Fork maintenance
 
 on:
+  push:
+    branches: [fork-main]
   schedule:
     - cron: '37 3 * * *'
   workflow_dispatch:
@@ -21,7 +23,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '2'
+      CARGO_BUILD_JOBS: '1'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
@@ -48,17 +50,17 @@ jobs:
               output.write('status='+result['status']+'\n')
           PY
       - name: Install Rust and protocol compiler
-        if: steps.sync.outputs.status == 'candidate_ready'
+        if: steps.sync.outputs.status == 'candidate_ready' || github.event_name == 'push'
         run: |
           rustup show active-toolchain
           command -v protoc || brew install protobuf
         working-directory: codex-rs
       - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532
-        if: steps.sync.outputs.status == 'candidate_ready'
+        if: steps.sync.outputs.status == 'candidate_ready' || github.event_name == 'push'
         with:
           tool: cargo-nextest
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
-        if: steps.sync.outputs.status == 'candidate_ready'
+        if: steps.sync.outputs.status == 'candidate_ready' || github.event_name == 'push'
         with:
           path: |
             ~/.cargo/registry
@@ -67,7 +69,7 @@ jobs:
           key: heartbeat-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('codex-rs/rust-toolchain.toml', 'codex-rs/Cargo.lock') }}
           restore-keys: heartbeat-${{ runner.os }}-${{ runner.arch }}-
       - name: Check candidate
-        if: steps.sync.outputs.status == 'candidate_ready'
+        if: steps.sync.outputs.status == 'candidate_ready' || github.event_name == 'push'
         run: python3 scripts/codex-fork check > "$RUNNER_TEMP/fork-checks.json"
       - name: Advance maintained source only after checks
         if: steps.sync.outputs.status == 'candidate_ready'

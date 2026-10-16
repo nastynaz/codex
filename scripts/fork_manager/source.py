@@ -185,6 +185,7 @@ def publish(root):
         raise Failure(
             "Destination must be your fork of the configured upstream repository"
         )
+    check(root)
     url = f"git@github.com:{cfg['repository']}.git"
     # A normal push: never overwrite existing remote history.
     run(["git", "push", url, f"HEAD:refs/heads/{cfg['branch']}"], cwd=root)

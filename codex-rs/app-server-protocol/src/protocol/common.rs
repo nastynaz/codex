@@ -1054,6 +1054,20 @@ client_request_definitions! {
         serialization: global("config"),
         response: v2::PluginUninstallResponse,
     },
+    /// Delivers scheduled input to the active turn, or starts it when idle.
+    TurnHeartbeat => "turn/heartbeat" {
+        params: v2::TurnHeartbeatParams,
+        inspect_params: true,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnHeartbeatResponse,
+    },
+    /// Starts a turn only if idle; never steers or queues input.
+    TurnStartIfIdle => "turn/startIfIdle" {
+        params: v2::TurnStartParams,
+        inspect_params: true,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnStartIfIdleResponse,
+    },
     TurnStart => "turn/start" {
         params: v2::TurnStartParams,
         inspect_params: true,

@@ -124,7 +124,7 @@ fn reject_obsolete_request_fields(request: &JSONRPCRequest) -> Result<(), JSONRP
 fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSONRPCErrorError> {
     if matches!(
         request.method.as_str(),
-        "thread/start" | "thread/resume" | "thread/fork" | "turn/start"
+        "thread/start" | "thread/resume" | "thread/fork" | "turn/start" | "turn/startIfIdle"
     ) && request
         .params
         .as_ref()
@@ -996,6 +996,8 @@ impl MessageProcessor {
             | ClientRequest::ThreadDelete { .. }
             | ClientRequest::ThreadArchive { .. } => (Some(self.turn_admission.admit()?), false),
             ClientRequest::TurnStart { .. }
+            | ClientRequest::TurnStartIfIdle { .. }
+            | ClientRequest::TurnHeartbeat { .. }
             | ClientRequest::TurnSteer { .. }
             | ClientRequest::ReviewStart { .. }
             | ClientRequest::ThreadCompactStart { .. }
@@ -1638,6 +1640,26 @@ impl MessageProcessor {
             ClientRequest::MockExperimentalMethod { params, .. } => {
                 self.catalog_processor
                     .mock_experimental_method(params)
+                    .await
+            }
+            ClientRequest::TurnHeartbeat { params, .. } => {
+                self.turn_processor
+                    .turn_heartbeat(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                    )
+                    .await
+            }
+            ClientRequest::TurnStartIfIdle { params, .. } => {
+                self.turn_processor
+                    .turn_start_if_idle(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                    )
                     .await
             }
             ClientRequest::TurnStart { params, .. } => {

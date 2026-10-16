@@ -621,6 +621,8 @@ export type { TurnCompletedNotification } from "./TurnCompletedNotification";
 export type { TurnDiffUpdatedNotification } from "./TurnDiffUpdatedNotification";
 export type { TurnEnvironmentParams } from "./TurnEnvironmentParams";
 export type { TurnError } from "./TurnError";
+export type { TurnHeartbeatParams } from "./TurnHeartbeatParams";
+export type { TurnHeartbeatResponse } from "./TurnHeartbeatResponse";
 export type { TurnInterruptParams } from "./TurnInterruptParams";
 export type { TurnInterruptResponse } from "./TurnInterruptResponse";
 export type { TurnItemsView } from "./TurnItemsView";
@@ -628,6 +630,7 @@ export type { TurnModerationMetadataNotification } from "./TurnModerationMetadat
 export type { TurnPlanStep } from "./TurnPlanStep";
 export type { TurnPlanStepStatus } from "./TurnPlanStepStatus";
 export type { TurnPlanUpdatedNotification } from "./TurnPlanUpdatedNotification";
+export type { TurnStartIfIdleResponse } from "./TurnStartIfIdleResponse";
 export type { TurnStartParams } from "./TurnStartParams";
 export type { TurnStartResponse } from "./TurnStartResponse";
 export type { TurnStartedNotification } from "./TurnStartedNotification";

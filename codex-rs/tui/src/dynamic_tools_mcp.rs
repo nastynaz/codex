@@ -100,6 +100,7 @@ impl ThreadToolTransport {
 #[derive(Clone)]
 pub(crate) struct ToolServices {
     pub(crate) task_tools: bool,
+    pub(crate) heartbeats: Option<crate::heartbeat::Store>,
     pub(crate) worktrees: Option<crate::managed_worktree_tools::ManagedWorktreeTools>,
 }
 
@@ -113,13 +114,14 @@ impl ToolServices {
     }
 }
 
-type ToolConnection = Arc<RwLock<Option<(AppServerRequestHandle, AppEventSender)>>>;
+pub(crate) type ToolConnection = Arc<RwLock<Option<(AppServerRequestHandle, AppEventSender)>>>;
 
 pub(crate) struct DynamicToolMcpServer {
     connection: ToolConnection,
     config: Value,
     namespace: &'static str,
     task: JoinHandle<()>,
+    _heartbeat: Option<crate::heartbeat::Scheduler>,
 }
 
 impl DynamicToolMcpServer {
@@ -179,6 +181,13 @@ impl DynamicToolMcpServer {
         }
         let connection = Arc::new(RwLock::new(Some((request_handle, app_event_tx))));
         let namespace = services.namespace();
+        let heartbeat = services.heartbeats.as_ref().map(|store| {
+            store.start(
+                Arc::clone(&connection),
+                features.clone(),
+                server_config.clone(),
+            )
+        });
         let handler = DynamicToolMcpHandler {
             connection: Arc::clone(&connection),
             thread_start_params,
@@ -209,6 +218,7 @@ impl DynamicToolMcpServer {
             config: server_config,
             namespace,
             task,
+            _heartbeat: heartbeat,
         })
     }
 }
@@ -261,6 +271,9 @@ impl ServerHandler for DynamicToolMcpHandler {
         } else {
             Vec::new()
         };
+        if let Some(store) = &self.services.heartbeats {
+            specs.push(store.spec());
+        }
         if self.services.worktrees.is_some() {
             specs.extend(crate::managed_worktree_tool_specs::specs());
         }
@@ -348,7 +361,38 @@ impl ServerHandler for DynamicToolMcpHandler {
             .ok_or_else(|| {
                 McpError::internal_error("TUI is reconnecting; tool was not sent", None)
             })?;
-        let response = if matches!(
+        let response = if params.tool == "automation_update" {
+            let store = self.services.heartbeats.as_ref().ok_or_else(|| {
+                McpError::invalid_params("Heartbeats require a local daemon TUI", None)
+            })?;
+            if params.arguments.get("mode").and_then(Value::as_str) == Some("create") {
+                let response: codex_app_server_protocol::ThreadReadResponse = request_handle
+                    .request_typed(codex_app_server_protocol::ClientRequest::ThreadRead {
+                        request_id: codex_app_server_protocol::RequestId::String(format!(
+                            "heartbeat-create-{}",
+                            Uuid::new_v4()
+                        )),
+                        params: codex_app_server_protocol::ThreadReadParams {
+                            thread_id: params.thread_id.clone(),
+                            include_turns: false,
+                        },
+                    })
+                    .await
+                    .map_err(|_| {
+                        McpError::internal_error(
+                            "Could not verify the calling thread; heartbeat was not created",
+                            None,
+                        )
+                    })?;
+                if response.thread.ephemeral || response.thread.parent_thread_id.is_some() {
+                    return Err(McpError::invalid_params(
+                        "Heartbeats require a persistent top-level thread",
+                        None,
+                    ));
+                }
+            }
+            store.execute(&params.thread_id, params.arguments)
+        } else if matches!(
             params.tool.as_str(),
             "create_worktree" | "get_worktree_creation_status" | "list_worktrees"
         ) {

@@ -3291,6 +3291,56 @@
           "type": "object"
         },
         {
+          "description": "Delivers scheduled input to the active turn, or starts it when idle.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "turn/heartbeat"
+              ],
+              "title": "Turn/heartbeatRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/TurnHeartbeatParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Turn/heartbeatRequest",
+          "type": "object"
+        },
+        {
+          "description": "Starts a turn only if idle; never steers or queues input.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "turn/startIfIdle"
+              ],
+              "title": "Turn/startIfIdleRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/TurnStartParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Turn/startIfIdleRequest",
+          "type": "object"
+        },
+        {
           "properties": {
             "id": {
               "$ref": "#/definitions/RequestId"
@@ -23704,6 +23754,46 @@
       ],
       "type": "object"
     },
+    "TurnHeartbeatParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "description": "Scheduled input inherits the thread's settings and cannot override them.",
+      "properties": {
+        "input": {
+          "items": {
+            "$ref": "#/definitions/UserInput"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "threadId"
+      ],
+      "title": "TurnHeartbeatParams",
+      "type": "object"
+    },
+    "TurnHeartbeatResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "turn": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Turn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new or active turn that accepted the message into its input queue. Null means delivery was deferred without accepting the message."
+        }
+      },
+      "title": "TurnHeartbeatResponse",
+      "type": "object"
+    },
     "TurnInterruptParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -23821,6 +23911,24 @@
         "turnId"
       ],
       "title": "TurnPlanUpdatedNotification",
+      "type": "object"
+    },
+    "TurnStartIfIdleResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "turn": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Turn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Null means no input was recorded or queued: the thread was busy or idle work yielded to pending input or Plan mode."
+        }
+      },
+      "title": "TurnStartIfIdleResponse",
       "type": "object"
     },
     "TurnStartParams": {

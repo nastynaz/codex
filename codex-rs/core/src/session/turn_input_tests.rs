@@ -1034,13 +1034,15 @@ async fn rejects_non_regular_turns() {
     }
 }
 
-#[test_case("automation_heartbeat_scheduled", None, UserInputOrigin::User; "human")]
-#[test_case("composer", Some("automation_heartbeat_scheduled"), UserInputOrigin::Heartbeat; "scheduled")]
+#[test_case("automation_heartbeat_scheduled", None, UserInputOrigin::User, false; "human")]
+#[test_case("composer", Some("automation_heartbeat_scheduled"), UserInputOrigin::Heartbeat, false; "scheduled")]
+#[test_case("composer", None, UserInputOrigin::Heartbeat, true; "heartbeat queue")]
 #[tokio::test]
 async fn steer_preserves_request_origin(
     active_trigger: &str,
     request_trigger: Option<&str>,
     origin: UserInputOrigin,
+    heartbeat: bool,
 ) {
     let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
     turn_context
@@ -1066,8 +1068,12 @@ async fn steer_preserves_request_origin(
             turn_trigger: request_trigger.map(str::to_owned),
             ..Default::default()
         }),
-        TurnInputMode::Steer {
-            expected_turn_id: turn_context.sub_id.clone(),
+        if heartbeat {
+            TurnInputMode::Heartbeat
+        } else {
+            TurnInputMode::Steer {
+                expected_turn_id: turn_context.sub_id.clone(),
+            }
         },
         "steer-submission".to_owned(),
     )
@@ -1088,6 +1094,110 @@ async fn steer_preserves_request_origin(
                 origin,
             },
         }]
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[test_case("idle_plan")]
+#[test_case("active_plan")]
+#[test_case("desired_plan")]
+#[test_case("compact")]
+#[test_case("review")]
+#[test_case("reserved")]
+#[tokio::test]
+async fn heartbeat_deferral_preserves_existing_tasks_and_settings(scenario: &str) {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    if matches!(scenario, "idle_plan" | "active_plan") {
+        let mut state = session.state.lock().await;
+        Arc::make_mut(&mut state.session_configuration.step_settings)
+            .collaboration_mode
+            .mode = ModeKind::Plan;
+    }
+    let turn_context = if scenario == "active_plan" {
+        let context = session
+            .new_turn_with_default_settings("plan-turn".into(), Default::default())
+            .await;
+        let mut state = session.state.lock().await;
+        Arc::make_mut(&mut state.session_configuration.step_settings)
+            .collaboration_mode
+            .mode = ModeKind::Default;
+        context
+    } else {
+        turn_context
+    };
+    if scenario == "reserved" {
+        *session.active_turn.lock().await = Some(ActiveTurn::default());
+    } else if scenario != "idle_plan" {
+        let kind = match scenario {
+            "compact" => TaskKind::Compact,
+            "review" => TaskKind::Review,
+            _ => TaskKind::Regular,
+        };
+        session
+            .spawn_task(
+                Arc::clone(&turn_context),
+                Vec::new(),
+                NeverEndingTask {
+                    kind,
+                    listen_to_cancellation_token: true,
+                },
+            )
+            .await;
+    }
+    if scenario == "desired_plan" {
+        let mut state = session.state.lock().await;
+        Arc::make_mut(&mut state.session_configuration.step_settings)
+            .collaboration_mode
+            .mode = ModeKind::Plan;
+    }
+    let before = session
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .map(|turn| Arc::clone(&turn.turn_state));
+    let settings = session.thread_settings_snapshot().await;
+    let result = handle(
+        &session,
+        TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Heartbeat activated".into(),
+            text_elements: vec![],
+        }]),
+        TurnInputMode::Heartbeat,
+        "heartbeat".into(),
+    )
+    .await
+    .unwrap();
+    let reason = match scenario {
+        "reserved" => NotSubmittedReason::NotIdle,
+        "compact" => NotSubmittedReason::ActiveTurnNotSteerable {
+            turn_kind: NonSteerableTurnKind::Compact,
+        },
+        "review" => NotSubmittedReason::ActiveTurnNotSteerable {
+            turn_kind: NonSteerableTurnKind::Review,
+        },
+        _ => NotSubmittedReason::PlanMode,
+    };
+    assert_eq!(result, TurnInputSubmission::NotSubmitted { reason });
+    assert_eq!(session.thread_settings_snapshot().await, settings);
+    let after = session
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .map(|turn| Arc::clone(&turn.turn_state));
+    assert!(match (before, after) {
+        (None, None) => true,
+        (Some(before), Some(after)) => Arc::ptr_eq(&before, &after),
+        _ => false,
+    });
+    assert!(
+        session
+            .input_queue
+            .get_pending_input(&session.active_turn)
+            .await
+            .0
+            .is_empty()
     );
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }

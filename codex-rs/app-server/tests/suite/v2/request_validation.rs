@@ -72,6 +72,14 @@ async fn legacy_permission_profile_requests_fail_closed() -> Result<()> {
             json!({
                 "threadId": "missing-thread",
                 "input": [],
+                "permissionProfile": legacy_permission_profile.clone()
+            }),
+        ),
+        (
+            "turn/startIfIdle",
+            json!({
+                "threadId": "missing-thread",
+                "input": [],
                 "permissionProfile": legacy_permission_profile
             }),
         ),
@@ -233,5 +241,39 @@ async fn request_handlers_reject_remote_image_urls() -> Result<()> {
         assert_eq!(actual, expected, "unexpected response for {method}");
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_heartbeat_rejects_settings_overrides_before_loading_thread() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    for field in ["permissions", "collaborationMode", "turnTrigger"] {
+        let mut params = json!({"threadId":"missing-thread","input":[]});
+        params[field] = json!("must not be accepted");
+        let id = mcp.send_raw_request("turn/heartbeat", Some(params)).await?;
+        let error: JSONRPCError = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(id)),
+        )
+        .await??;
+        assert!(error.error.message.contains("unknown field"), "{error:?}");
+        assert!(error.error.message.contains(field), "{error:?}");
+    }
+    let id = mcp
+        .send_raw_request(
+            "turn/heartbeat",
+            Some(json!({"threadId":"missing-thread","input":[]})),
+        )
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(id)),
+    )
+    .await??;
+    assert_eq!(error.error.message, "heartbeat input must not be empty");
     Ok(())
 }

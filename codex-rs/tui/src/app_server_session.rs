@@ -499,6 +499,13 @@ impl AppServerSession {
         };
         let services = crate::dynamic_tools_mcp::ToolServices {
             task_tools: !self.uses_embedded_app_server(),
+            heartbeats: (!self.uses_embedded_app_server()
+                && !self.uses_remote_workspace()
+                && !config.active_project.is_untrusted()
+                && config
+                    .features
+                    .enabled(codex_features::Feature::InAppLocalAutomation))
+            .then(|| crate::heartbeat::Store::new(&config.codex_home)),
             worktrees,
         };
         if !services.task_tools && services.worktrees.is_none() {

@@ -174,6 +174,8 @@ impl TurnInputRequest {
 pub enum TurnInputMode {
     /// Start a regular turn when idle, otherwise steer the active regular turn.
     StartOrSteer,
+    /// Queue a scheduled heartbeat on an active regular turn, or start it atomically when idle.
+    Heartbeat,
     /// Start only when the thread is idle.
     StartIfIdle,
     /// Start an internal continuation when idle.

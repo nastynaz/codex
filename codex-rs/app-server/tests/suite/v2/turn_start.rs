@@ -791,6 +791,295 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
 }
 
 #[tokio::test]
+async fn turn_start_if_idle_never_steers_and_preserves_heartbeat_origin() -> Result<()> {
+    use codex_app_server_protocol::TurnStartIfIdleResponse;
+    let (release, gate) = oneshot::channel();
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![responses::ev_response_created("first")]),
+            },
+            StreamingSseChunk {
+                gate: Some(gate),
+                body: responses::sse(vec![responses::ev_completed("first")]),
+            },
+        ],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("heartbeat"),
+                responses::ev_completed("heartbeat"),
+            ]),
+        }],
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "model = \"gpt-5.5\"\napproval_policy = \"never\"\nopenai_base_url = \"{}/v1\"\ncli_auth_credentials_store = \"file\"\n[features]\nenable_request_compression = false\n",
+            server.uri()
+        ),
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("test-token").plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".into()),
+            ..Default::default()
+        })
+        .await?;
+    let TurnStartResponse { turn: first } = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: "human input".into(),
+                    text_elements: vec![],
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+    let _: TurnStartedNotification =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("turn/started")).await??;
+    timeout(DEFAULT_READ_TIMEOUT, server.wait_for_request_count(1)).await?;
+    let busy: TurnStartIfIdleResponse = mcp
+        .request(|request_id| ClientRequest::TurnStartIfIdle {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: "MUST_NOT_BE_QUEUED".into(),
+                    text_elements: vec![],
+                }],
+                turn_trigger: Some("automation_heartbeat_scheduled".into()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert!(busy.turn.is_none());
+    release.send(()).unwrap();
+    let _: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    let heartbeat = concat!(
+        "<heartbeat>\n",
+        "  <automation_id>test</automation_id>\n",
+        "  <current_time_iso>2026-10-14T12:00:00Z</current_time_iso>\n",
+        "  <instructions>\nCheck progress\n  </instructions>\n",
+        "</heartbeat>\n",
+    );
+    let idle: TurnStartIfIdleResponse = mcp
+        .request(|request_id| ClientRequest::TurnStartIfIdle {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: heartbeat.into(),
+                    text_elements: vec![],
+                }],
+                turn_trigger: Some("automation_heartbeat_scheduled".into()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_ne!(idle.turn.expect("idle thread starts").id, first.id);
+    let _: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        2,
+        "busy input must not trigger another sampling round"
+    );
+    let body: Value = serde_json::from_slice(&requests[1])?;
+    assert!(!body.to_string().contains("MUST_NOT_BE_QUEUED"));
+    assert!(body.to_string().contains("human input"));
+    assert!(body.to_string().contains("Check progress"));
+    let metadata: Value = serde_json::from_str(
+        body["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .unwrap(),
+    )?;
+    assert_eq!(metadata["turn_trigger"], "automation_heartbeat_scheduled");
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_heartbeat_queues_activation_on_busy_turn_and_starts_when_idle() -> Result<()> {
+    use codex_app_server_protocol::TurnHeartbeatParams;
+    use codex_app_server_protocol::TurnHeartbeatResponse;
+    let (release, gate) = oneshot::channel();
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![responses::ev_response_created("first")]),
+            },
+            StreamingSseChunk {
+                gate: Some(gate),
+                body: responses::sse(vec![responses::ev_completed("first")]),
+            },
+        ],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("heartbeat"),
+                responses::ev_completed("heartbeat"),
+            ]),
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("idle-heartbeat"),
+                responses::ev_completed("idle-heartbeat"),
+            ]),
+        }],
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "model = \"gpt-5.5\"\napproval_policy = \"never\"\nopenai_base_url = \"{}/v1\"\ncli_auth_credentials_store = \"file\"\n[features]\nenable_request_compression = false\n",
+            server.uri()
+        ),
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("test-token").plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".into()),
+            ..Default::default()
+        })
+        .await?;
+    let TurnStartResponse { turn: first } = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: "human input".into(),
+                    text_elements: vec![],
+                }],
+                turn_trigger: Some("composer".into()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let _: TurnStartedNotification =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("turn/started")).await??;
+    timeout(DEFAULT_READ_TIMEOUT, server.wait_for_request_count(1)).await?;
+    let busy: TurnHeartbeatResponse = mcp
+        .request(|request_id| ClientRequest::TurnHeartbeat {
+            request_id,
+            params: TurnHeartbeatParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: "<heartbeat>\n  <automation_id>busy-activation</automation_id>\n  <current_time_iso>2026-10-14T12:00:00Z</current_time_iso>\n  <instructions>\nHeartbeat activated: Check work\nRepeat: true; interval: 300 seconds.\nSaved instructions:\nCheck progress during the current turn.\n  </instructions>\n</heartbeat>\n".into(),
+                    text_elements: vec![],
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(
+        busy.turn.expect("busy turn accepts queued heartbeat").id,
+        first.id
+    );
+    release.send(()).unwrap();
+    let _: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    let heartbeat = concat!(
+        "<heartbeat>\n",
+        "  <automation_id>test</automation_id>\n",
+        "  <current_time_iso>2026-10-14T12:00:00Z</current_time_iso>\n",
+        "  <instructions>\nCheck progress\n  </instructions>\n",
+        "</heartbeat>\n",
+    );
+    let idle: TurnHeartbeatResponse = mcp
+        .request(|request_id| ClientRequest::TurnHeartbeat {
+            request_id,
+            params: TurnHeartbeatParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: heartbeat.into(),
+                    text_elements: vec![],
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_ne!(idle.turn.expect("idle thread starts").id, first.id);
+    let _: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        3,
+        "busy heartbeat is consumed in the active turn before the idle activation"
+    );
+    let body: Value = serde_json::from_slice(&requests[1])?;
+    assert!(body.to_string().contains("Heartbeat activated: Check work"));
+    assert!(
+        body.to_string()
+            .contains("Repeat: true; interval: 300 seconds")
+    );
+    assert!(body.to_string().contains("human input"));
+    assert!(body.to_string().contains("Check progress"));
+    let metadata: Value = serde_json::from_str(
+        body["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .unwrap(),
+    )?;
+    assert_eq!(
+        metadata["turn_trigger"], "composer",
+        "queued input retains the active turn's origin"
+    );
+    let idle_body: Value = serde_json::from_slice(&requests[2])?;
+    let idle_metadata: Value = serde_json::from_str(
+        idle_body["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .unwrap(),
+    )?;
+    assert_eq!(
+        idle_metadata["turn_trigger"],
+        "automation_heartbeat_scheduled"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn turn_start_additional_context_flows_to_model_input() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;

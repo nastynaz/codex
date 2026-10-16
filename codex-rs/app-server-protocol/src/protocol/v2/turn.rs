@@ -303,6 +303,38 @@ pub struct TurnStartResponse {
     pub turn: Turn,
 }
 
+/// Scheduled input inherits the thread's settings and cannot override them.
+#[derive(
+    Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct TurnHeartbeatParams {
+    pub thread_id: String,
+    pub input: Vec<UserInput>,
+    #[ts(optional = nullable)]
+    #[experimental("turn/heartbeat.cyberAccessProgram")]
+    pub cyber_access_program: Option<CyberAccessProgram>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnHeartbeatResponse {
+    /// The new or active turn that accepted the message into its input queue.
+    /// Null means delivery was deferred without accepting the message.
+    pub turn: Option<Turn>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnStartIfIdleResponse {
+    /// Null means no input was recorded or queued: the thread was busy or idle
+    /// work yielded to pending input or Plan mode.
+    pub turn: Option<Turn>,
+}
+
 #[derive(
     Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
 )]

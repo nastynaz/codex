@@ -236,9 +236,16 @@ pub(super) async fn handle(
     let request = request.into();
     let result = match mode {
         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
+        TurnInputMode::Heartbeat => heartbeat(session, request, submission_id).await,
         TurnInputMode::StartIfIdle => {
             let kind = match &request.request.input {
-                SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
+                SubmittedTurnInput::UserInput { content, .. }
+                    if !content.is_empty()
+                        && UserInputOrigin::from_turn_trigger(
+                            request.request.start.turn_trigger.as_deref(),
+                        )
+                        .is_user() =>
+                {
                     TurnStartKind::User
                 }
                 SubmittedTurnInput::UserInput { .. }
@@ -323,6 +330,53 @@ pub(super) async fn handle_recovery(
         tracing::Span::current().record("turn.id", turn_id);
     }
     result
+}
+
+async fn heartbeat(
+    session: &Arc<Session>,
+    mut request: WithTurnExtensionData<TurnInputRequest>,
+    submission_id: String,
+) -> CodexResult<TurnInputSubmission> {
+    if request.request.thread_settings != ThreadSettingsOverrides::default()
+        || request.turn_extension_init.is_some()
+        || !matches!(&request.request.input, SubmittedTurnInput::UserInput { content, .. } if !content.is_empty())
+    {
+        return Err(CodexErr::InvalidRequest(
+            "heartbeat requires nonempty input and cannot change thread settings".into(),
+        ));
+    }
+    request.request.start.turn_trigger = Some("automation_heartbeat_scheduled".into());
+    let sender_messages = capture_sender_user_messages(session, &mut request.request.input).await;
+    match session
+        .steer_input(
+            &mut request.request.input,
+            sender_messages.as_ref(),
+            request.request.additional_context.clone(),
+            None,
+            request.request.start.final_output_json_schema.as_ref(),
+            request.request.responsesapi_client_metadata.clone(),
+            UserInputOrigin::Heartbeat,
+        )
+        .await
+    {
+        Ok((turn_id, root_turn_id)) => Ok(TurnInputSubmission::Steered {
+            turn_id,
+            root_turn_id,
+        }),
+        // A concurrent background turn may reserve the idle slot. Keep the same
+        // atomic admission as other automatic work; never replace its task.
+        Err(NotSubmittedReason::NoActiveTurn) => {
+            start_if_idle(
+                session,
+                request,
+                submission_id,
+                TurnStartKind::Automatic,
+                None,
+            )
+            .await
+        }
+        Err(reason) => Ok(TurnInputSubmission::NotSubmitted { reason }),
+    }
 }
 
 async fn start_or_steer(
@@ -602,7 +656,8 @@ async fn start_if_idle(
         }
         TurnStartKind::Automatic | TurnStartKind::Recovery => {
             // Empty automatic user input resumes sampling without a new message.
-            if !matches!(&input, SubmittedTurnInput::UserInput { .. }) {
+            if !matches!(&input, SubmittedTurnInput::UserInput { content, .. } if content.is_empty())
+            {
                 session
                     .input_queue
                     .extend_pending_input_for_turn_state(
@@ -819,6 +874,13 @@ impl Session {
             return Err(NotSubmittedReason::NoActiveTurn);
         };
         let active_turn_id = &active_task.turn_context.sub_id;
+
+        if origin == UserInputOrigin::Heartbeat
+            && (active_task.turn_context.collaboration_mode().mode == ModeKind::Plan
+                || self.collaboration_mode().await.mode == ModeKind::Plan)
+        {
+            return Err(NotSubmittedReason::PlanMode);
+        }
 
         if let Some(expected_turn_id) = expected_turn_id
             && expected_turn_id != active_turn_id

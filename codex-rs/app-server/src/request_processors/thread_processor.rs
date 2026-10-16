@@ -4563,8 +4563,37 @@ impl ThreadRequestProcessor {
                     active_path.display()
                 )));
             }
+            // A returning local TUI has a new ephemeral tool endpoint. Rebind only
+            // that client-owned server; model, permissions and other overrides keep
+            // the existing rejoin semantics while another client is subscribed.
+            let mut checked_params = params.clone();
+            if let Some(overrides) = &params.config
+                && overrides.len() == 1
+                && can_accept_direct_input(
+                    existing_thread.multi_agent_version(),
+                    &existing_thread.config_snapshot().await.session_source,
+                )
+                && let Some(value) = overrides.get("mcp_servers.codex_tui")
+                && existing_thread
+                    .config()
+                    .await
+                    .mcp_servers
+                    .get()
+                    .contains_key("codex_tui")
+            {
+                let value = toml::Value::try_from(value)
+                    .map_err(|_| invalid_request("invalid client MCP configuration"))?;
+                existing_thread
+                    .rebind_client_mcp_server("codex_tui", value)
+                    .await
+                    .map_err(|error| {
+                        invalid_request(format!("could not rebind TUI tools: {error}"))
+                    })?;
+                checked_params.config = None;
+            }
             let config_snapshot = existing_thread.config_snapshot().await;
-            let mismatch_details = collect_resume_override_mismatches(params, &config_snapshot);
+            let mismatch_details =
+                collect_resume_override_mismatches(&checked_params, &config_snapshot);
             if !mismatch_details.is_empty() {
                 let has_subscribers = !self
                     .thread_state_manager

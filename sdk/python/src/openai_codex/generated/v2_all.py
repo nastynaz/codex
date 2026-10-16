@@ -10592,6 +10592,15 @@ class TurnError(BaseModel):
     ] = None
 
 
+class TurnHeartbeatParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    input: list[UserInput]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class TurnPlanStep(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10777,6 +10786,15 @@ class PluginShareUpdateTargetsRequest(BaseModel):
         Field(title="Plugin/share/updateTargetsRequestMethod"),
     ]
     params: PluginShareUpdateTargetsParams
+
+
+class TurnHeartbeatRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["turn/heartbeat"], Field(title="Turn/heartbeatRequestMethod")]
+    params: TurnHeartbeatParams
 
 
 class TurnSteerRequest(BaseModel):
@@ -11821,6 +11839,30 @@ class TurnCompletedNotification(BaseModel):
     turn: Turn
 
 
+class TurnHeartbeatResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    turn: Annotated[
+        Turn | None,
+        Field(
+            description="The new or active turn that accepted the message into its input queue. Null means delivery was deferred without accepting the message."
+        ),
+    ] = None
+
+
+class TurnStartIfIdleResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    turn: Annotated[
+        Turn | None,
+        Field(
+            description="Null means no input was recorded or queued: the thread was busy or idle work yielded to pending input or Plan mode."
+        ),
+    ] = None
+
+
 class TurnStartResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12749,6 +12791,15 @@ class TurnStartParams(BaseModel):
     ] = None
 
 
+class TurnStartIfIdleRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["turn/startIfIdle"], Field(title="Turn/startIfIdleRequestMethod")]
+    params: TurnStartParams
+
+
 class TurnStartRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12847,6 +12898,8 @@ class ClientRequest(
         | SkillsConfigWriteRequest
         | PluginInstallRequest
         | PluginUninstallRequest
+        | TurnHeartbeatRequest
+        | TurnStartIfIdleRequest
         | TurnStartRequest
         | TurnSteerRequest
         | TurnInterruptRequest
@@ -12958,6 +13011,8 @@ class ClientRequest(
         | SkillsConfigWriteRequest
         | PluginInstallRequest
         | PluginUninstallRequest
+        | TurnHeartbeatRequest
+        | TurnStartIfIdleRequest
         | TurnStartRequest
         | TurnSteerRequest
         | TurnInterruptRequest

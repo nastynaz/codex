@@ -202,3 +202,67 @@ async fn hook_refresh_retries_current_plugin_policy_after_owner_replacement() ->
     assert!(session.hooks().preview_session_start(&request).is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn client_mcp_rebinding_survives_reload_without_changing_tool_policy() {
+    let (session, _) = make_session_and_context().await;
+    let home = session.codex_home().await;
+    let original: toml::Value = toml::from_str("url = 'http://127.0.0.1:12345/mcp'\nenabled = false\ndefault_tools_approval_mode = 'prompt'\n").unwrap();
+    let initial = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.to_path_buf())
+        .cli_overrides(vec![("mcp_servers.codex_tui".into(), original.clone())])
+        .build()
+        .await
+        .unwrap();
+    let initial_model = initial.model.clone();
+    session
+        .state
+        .lock()
+        .await
+        .session_configuration
+        .original_config_do_not_use = Arc::new(initial);
+    let mut changed = original.clone();
+    changed["url"] = toml::Value::String("http://127.0.0.1:23456/mcp".into());
+    session
+        .rebind_client_mcp_server("codex_tui", changed.clone())
+        .await
+        .unwrap();
+    session.reload_user_config_layer().await;
+    let after = session.get_config().await;
+    assert_eq!(after.model, initial_model);
+    assert_eq!(
+        after.config_layer_stack.effective_config()["mcp_servers"]["codex_tui"],
+        changed
+    );
+    let McpServerTransportConfig::StreamableHttp { url, .. } =
+        &after.mcp_servers.get()["codex_tui"].transport
+    else {
+        panic!("HTTP server");
+    };
+    assert_eq!(url, "http://127.0.0.1:23456/mcp");
+    let mut broadened = changed.clone();
+    broadened["default_tools_approval_mode"] = toml::Value::String("approve".into());
+    assert!(
+        session
+            .rebind_client_mcp_server("codex_tui", broadened)
+            .await
+            .is_err()
+    );
+    changed["url"] = toml::Value::String("https://example.com/mcp".into());
+    assert!(
+        session
+            .rebind_client_mcp_server("codex_tui", changed)
+            .await
+            .is_err()
+    );
+    assert!(
+        session
+            .rebind_client_mcp_server("unowned", original)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        session.get_config().await.mcp_servers.get(),
+        after.mcp_servers.get()
+    );
+}

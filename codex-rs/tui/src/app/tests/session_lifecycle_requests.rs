@@ -1530,7 +1530,8 @@ async fn local_daemon_registers_approval_gated_mcp_tools_for_both_start_paths_sc
         .find(|server| server.name == "codex_tui")
         .expect("local daemon must connect to the TUI MCP server")
         .tools;
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 10);
+    assert!(tools.contains_key("automation_update"));
     for tool in crate::dynamic_tools::DELEGATION_TOOLS {
         assert!(tools.contains_key(tool));
     }
@@ -1651,6 +1652,27 @@ async fn local_daemon_registers_approval_gated_mcp_tools_for_both_start_paths_sc
     let crate::dynamic_tools_mcp::ThreadToolTransport::Mcp(tool_server) = &transport else {
         panic!("expected the daemon task-tool bridge");
     };
+    for (id, arguments, expected) in [
+        (
+            90,
+            serde_json::json!({"mode":"create","kind":"heartbeat","destination":"thread","name":"Check progress","prompt":"Check progress, then delete this heartbeat when done.","rrule":"FREQ=MINUTELY;INTERVAL=5","status":"ACTIVE"}),
+            "saved",
+        ),
+        (91, serde_json::json!({"mode":"view"}), "Check progress"),
+        (
+            92,
+            serde_json::json!({"mode":"update","status":"PAUSED"}),
+            "PAUSED",
+        ),
+        (93, serde_json::json!({"mode":"delete"}), "deleted"),
+    ] {
+        let response = call_tool(id, "automation_update", arguments)
+            .send()
+            .await?
+            .text()
+            .await?;
+        assert!(response.contains(expected), "{response}");
+    }
     tool_server.suspend();
     let paused = call_tool(0, "list_threads", serde_json::json!({}))
         .send()
@@ -5361,5 +5383,150 @@ async fn command_center_read_only_open_requests_and_failure_preservation() -> Re
         server.shutdown().await?;
         proxy.await??;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn heartbeat_rebinds_loaded_thread_tools_and_survives_mcp_reload() -> Result<()> {
+    use codex_app_server_protocol::McpServerRefreshResponse;
+    use codex_app_server_protocol::McpServerToolCallParams;
+    use codex_app_server_protocol::McpServerToolCallResponse;
+    use codex_app_server_protocol::ThreadResumeParams;
+    use codex_app_server_protocol::ThreadResumeResponse;
+    let (mut app, _events, _ops) = Box::pin(make_test_app_with_channels()).await;
+    let home = tempdir()?;
+    app.config.codex_home = home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(home.path().abs());
+    let (mut server, _, proxy) =
+        Box::pin(start_recording_app_server(&app.config, None, None)).await?;
+    Box::pin(server.start_dynamic_tool_mcp(
+        app.config.clone(),
+        app.app_event_tx.clone(),
+        app.dynamic_tool_status_updates.clone(),
+    ))
+    .await?;
+    let thread_id = create_history_rollout(
+        &app.config,
+        ThreadHistoryMode::Legacy,
+        "Heartbeat endpoint handoff",
+    )?;
+    Box::pin(server.resume_thread(
+        &app.local_settings,
+        app.config.clone(),
+        thread_id,
+        crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+    ))
+    .await?;
+    let thread = thread_id.to_string();
+    let store = crate::heartbeat::Store::new(home.path());
+    assert!(
+        store
+            .execute(
+                &thread,
+                serde_json::json!({
+                    "mode": "create",
+                    "kind": "heartbeat",
+                    "destination": "thread",
+                    "name": "Original endpoint",
+                    "prompt": "Check work",
+                    "rrule": "FREQ=HOURLY;INTERVAL=1",
+                    "status": "PAUSED"
+                }),
+            )
+            .success
+    );
+    let other_home = tempdir()?;
+    let other_store = crate::heartbeat::Store::new(other_home.path());
+    assert!(
+        other_store
+            .execute(
+                &thread,
+                serde_json::json!({
+                    "mode": "create",
+                    "kind": "heartbeat",
+                    "destination": "thread",
+                    "name": "Replacement endpoint",
+                    "prompt": "Check work",
+                    "rrule": "FREQ=HOURLY;INTERVAL=1",
+                    "status": "PAUSED"
+                }),
+            )
+            .success
+    );
+    let replacement = Arc::new(
+        crate::dynamic_tools_mcp::DynamicToolMcpServer::start(
+            server.request_handle(),
+            codex_app_server_protocol::ThreadStartParams::default(),
+            app.config.features.get().clone(),
+            app.app_event_tx.clone(),
+            app.dynamic_tool_status_updates.clone(),
+            None,
+            crate::dynamic_tools_mcp::ToolServices {
+                task_tools: true,
+                heartbeats: Some(other_store),
+                worktrees: None,
+            },
+        )
+        .await?,
+    );
+    let mut config = None;
+    crate::dynamic_tools_mcp::ThreadToolTransport::Mcp(replacement.clone())
+        .configure_mcp(&mut config);
+    let call = |id: &str| ClientRequest::McpServerToolCall {
+        request_id: AppServerRequestId::String(id.into()),
+        params: McpServerToolCallParams {
+            thread_id: thread.clone(),
+            server: "codex_tui".into(),
+            tool: "automation_update".into(),
+            arguments: Some(serde_json::json!({"mode":"view"})),
+            meta: Some(serde_json::json!({"threadId":thread})),
+        },
+    };
+    let before: McpServerToolCallResponse = server
+        .request_handle()
+        .request_typed(call("before-rebind"))
+        .await?;
+    assert!(
+        serde_json::to_string(&before)?.contains("Original endpoint"),
+        "{before:?}"
+    );
+    let _: ThreadResumeResponse = server
+        .request_handle()
+        .request_typed(ClientRequest::ThreadResume {
+            request_id: AppServerRequestId::String("rebind".into()),
+            params: ThreadResumeParams {
+                thread_id: thread.clone(),
+                config,
+                exclude_turns: true,
+                ..Default::default()
+            },
+        })
+        .await?;
+    let after: McpServerToolCallResponse = server
+        .request_handle()
+        .request_typed(call("after-rebind"))
+        .await?;
+    assert!(
+        serde_json::to_string(&after)?.contains("Replacement endpoint"),
+        "{after:?}"
+    );
+    let _: McpServerRefreshResponse = server
+        .request_handle()
+        .request_typed(ClientRequest::McpServerRefresh {
+            request_id: AppServerRequestId::String("reload".into()),
+            params: None,
+        })
+        .await?;
+    let reloaded: McpServerToolCallResponse = server
+        .request_handle()
+        .request_typed(call("after-reload"))
+        .await?;
+    assert!(
+        serde_json::to_string(&reloaded)?.contains("Replacement endpoint"),
+        "{reloaded:?}"
+    );
+    server.shutdown().await?;
+    drop(replacement);
+    proxy.await??;
     Ok(())
 }

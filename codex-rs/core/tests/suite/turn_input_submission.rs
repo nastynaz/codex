@@ -581,6 +581,29 @@ async fn start_turn_if_idle_keeps_automatic_plan_rejections_atomic(
         current_settings
     );
 
+    let heartbeat = test
+        .codex
+        .start_turn_if_idle(
+            user_message_request("rejected scheduled heartbeat")
+                .with_thread_settings(overrides.clone())
+                .on_start(TurnStartOptions {
+                    turn_trigger: Some("automation_heartbeat_scheduled".into()),
+                    ..Default::default()
+                }),
+        )
+        .await
+        .expect("scheduled heartbeats obey automatic Plan admission");
+    assert_eq!(
+        heartbeat,
+        StartIfIdleSubmission::NotSubmitted {
+            reason: NotSubmittedReason::PlanMode
+        }
+    );
+    assert_eq!(
+        test.codex.thread_settings_snapshot().await,
+        current_settings
+    );
+
     // Rejection releases the idle reservation, and an explicit user can make
     // either transition without receiving the rejected automatic input.
     let response_mock = responses::mount_sse_once(
@@ -607,6 +630,7 @@ async fn start_turn_if_idle_keeps_automatic_plan_rejections_atomic(
     let request = response_mock.single_request();
     assert!(request.body_contains_text("explicit user input"));
     assert!(!request.body_contains_text("rejected automatic input"));
+    assert!(!request.body_contains_text("rejected scheduled heartbeat"));
 }
 
 #[tokio::test]

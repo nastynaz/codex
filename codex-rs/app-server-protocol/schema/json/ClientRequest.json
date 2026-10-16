@@ -5752,6 +5752,26 @@
       ],
       "type": "object"
     },
+    "TurnHeartbeatParams": {
+      "additionalProperties": false,
+      "description": "Scheduled input inherits the thread's settings and cannot override them.",
+      "properties": {
+        "input": {
+          "items": {
+            "$ref": "#/definitions/UserInput"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "TurnInterruptParams": {
       "properties": {
         "threadId": {
@@ -7755,6 +7775,56 @@
         "params"
       ],
       "title": "Plugin/uninstallRequest",
+      "type": "object"
+    },
+    {
+      "description": "Delivers scheduled input to the active turn, or starts it when idle.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "turn/heartbeat"
+          ],
+          "title": "Turn/heartbeatRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/TurnHeartbeatParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Turn/heartbeatRequest",
+      "type": "object"
+    },
+    {
+      "description": "Starts a turn only if idle; never steers or queues input.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "turn/startIfIdle"
+          ],
+          "title": "Turn/startIfIdleRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/TurnStartParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Turn/startIfIdleRequest",
       "type": "object"
     },
     {

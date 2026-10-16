@@ -1162,7 +1162,7 @@ fn same_thread_id(first: &str, second: &str) -> bool {
         .is_some_and(|(first, second)| first == second)
 }
 
-async fn register_background_thread(
+pub(crate) async fn register_background_thread(
     app_event_tx: Option<&AppEventSender>,
     mut thread: Thread,
     task_tools_available: bool,
@@ -1261,7 +1261,7 @@ async fn start_turn(
     .await
 }
 
-async fn background_turn_program(
+pub(crate) async fn background_turn_program(
     features: &Features,
     handle: &AppServerRequestHandle,
     thread_id: &str,

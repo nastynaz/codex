@@ -321,6 +321,36 @@ impl ConfigLayerStack {
         })
     }
 
+    /// Rebinds an existing client-owned MCP server without changing other session flags.
+    /// User/project servers cannot be promoted to client-owned servers through this path.
+    pub fn with_rebound_session_mcp_server(
+        &self,
+        name: &str,
+        value: TomlValue,
+    ) -> std::io::Result<Self> {
+        let mut stack = self.clone();
+        let layer = stack
+            .layers
+            .iter_mut()
+            .rev()
+            .find(|layer| {
+                matches!(layer.name, ConfigLayerSource::SessionFlags)
+                    && layer.disabled_reason.is_none()
+                    && layer
+                        .config
+                        .get("mcp_servers")
+                        .and_then(|servers| servers.get(name))
+                        .is_some()
+            })
+            .ok_or_else(|| {
+                std::io::Error::other("MCP server is not owned by this session's client")
+            })?;
+        layer.config["mcp_servers"][name] = value;
+        layer.version = version_for_toml(&layer.config);
+        layer.raw_toml = None;
+        Ok(stack)
+    }
+
     pub fn with_user_and_project_exec_policy_rules_ignored(
         mut self,
         ignore_user_and_project_exec_policy_rules: bool,

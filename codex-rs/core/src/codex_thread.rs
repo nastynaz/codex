@@ -422,6 +422,15 @@ impl CodexThread {
             .await
     }
 
+    /// Delivers scheduled input without changing settings or replacing an active task.
+    pub async fn submit_heartbeat(
+        &self,
+        request: TurnInputRequest,
+    ) -> CodexResult<TurnInputSubmission> {
+        self.submit_turn_input_with_mode(request, TurnInputMode::Heartbeat)
+            .await
+    }
+
     /// Starts a regular turn only when the thread is idle.
     ///
     /// Core declines the input without recording or enqueueing it when idle
@@ -1093,6 +1102,15 @@ impl CodexThread {
                 .refresh_mcp_config(expected_config, next_config),
         )
         .await
+    }
+
+    /// Replaces only a client-owned local MCP endpoint, retaining its tool policy.
+    pub async fn rebind_client_mcp_server(
+        &self,
+        name: &str,
+        value: toml::Value,
+    ) -> std::io::Result<()> {
+        self.session.rebind_client_mcp_server(name, value).await
     }
 
     /// Refreshes this thread's Apps tools before returning their runtime state.

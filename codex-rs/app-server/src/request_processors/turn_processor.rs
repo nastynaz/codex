@@ -4,6 +4,9 @@ use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
 use codex_agent_extension::AgentRunner;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
+use codex_app_server_protocol::TurnHeartbeatParams;
+use codex_app_server_protocol::TurnHeartbeatResponse;
+use codex_app_server_protocol::TurnStartIfIdleResponse;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -17,6 +20,7 @@ use codex_protocol::protocol::TurnSettingsUpdate;
 use codex_protocol::protocol::TurnSettingsUpdateOutcome;
 use codex_protocol::turn_input::AnnotatedResponseItem;
 use codex_protocol::turn_input::ResponseItemAnnotations;
+use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
@@ -142,6 +146,13 @@ struct ThreadSettingsBuildParams {
     personality: Option<Personality>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TurnAdmissionMode {
+    Explicit,
+    IdleOnly,
+    Heartbeat,
+}
+
 impl TurnRequestProcessor {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -187,9 +198,71 @@ impl TurnRequestProcessor {
             params,
             app_server_client_name,
             app_server_client_version,
+            TurnAdmissionMode::Explicit,
         )
         .await
-        .map(|response| Some(response.into()))
+        .map(|response| response.map(Into::into))
+    }
+
+    pub(crate) async fn turn_start_if_idle(
+        &self,
+        request_id: ConnectionRequestId,
+        params: TurnStartParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        validate_user_input_image_urls(&params.input)?;
+        self.turn_start_inner(
+            request_id,
+            params,
+            app_server_client_name,
+            app_server_client_version,
+            TurnAdmissionMode::IdleOnly,
+        )
+        .await
+        .map(|response| {
+            Some(
+                TurnStartIfIdleResponse {
+                    turn: response.map(|response| response.turn),
+                }
+                .into(),
+            )
+        })
+    }
+
+    pub(crate) async fn turn_heartbeat(
+        &self,
+        request_id: ConnectionRequestId,
+        params: TurnHeartbeatParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if params.input.is_empty() {
+            return Err(invalid_request("heartbeat input must not be empty"));
+        }
+        validate_user_input_image_urls(&params.input)?;
+        self.turn_start_inner(
+            request_id,
+            TurnStartParams {
+                thread_id: params.thread_id,
+                input: params.input,
+                cyber_access_program: params.cyber_access_program,
+                turn_trigger: Some("automation_heartbeat_scheduled".into()),
+                ..Default::default()
+            },
+            app_server_client_name,
+            app_server_client_version,
+            TurnAdmissionMode::Heartbeat,
+        )
+        .await
+        .map(|response| {
+            Some(
+                TurnHeartbeatResponse {
+                    turn: response.map(|response| response.turn),
+                }
+                .into(),
+            )
+        })
     }
 
     pub(crate) async fn thread_inject_items(
@@ -528,7 +601,8 @@ impl TurnRequestProcessor {
         params: TurnStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
-    ) -> Result<TurnStartResponse, JSONRPCErrorError> {
+        admission: TurnAdmissionMode,
+    ) -> Result<Option<TurnStartResponse>, JSONRPCErrorError> {
         let (thread_id, thread) =
             self.load_thread(&params.thread_id)
                 .await
@@ -537,6 +611,18 @@ impl TurnRequestProcessor {
                 })?;
         self.ensure_direct_input_allowed(&request_id, thread.as_ref())
             .await?;
+        if admission != TurnAdmissionMode::Explicit
+            && params.turn_trigger.as_deref() == Some("automation_heartbeat_scheduled")
+            && !thread
+                .config()
+                .await
+                .features
+                .enabled(codex_features::Feature::InAppLocalAutomation)
+        {
+            return Err(invalid_request(
+                "Local heartbeat automation is disabled by managed policy",
+            ));
+        }
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
@@ -637,11 +723,17 @@ impl TurnRequestProcessor {
                 environment_requests,
             )
             .await;
-        let thread_settings = self
-            .build_thread_settings_overrides(
+        let thread_settings = if admission == TurnAdmissionMode::Heartbeat {
+            codex_protocol::protocol::ThreadSettingsOverrides::default()
+        } else {
+            self.build_thread_settings_overrides(
                 thread.as_ref(),
                 ThreadSettingsBuildParams {
-                    method: "turn/start",
+                    method: if admission == TurnAdmissionMode::IdleOnly {
+                        "turn/startIfIdle"
+                    } else {
+                        "turn/start"
+                    },
                     disabled_plugin_ids: params.disabled_plugin_ids,
                     environment_override,
                     approval_policy: params.approval_policy,
@@ -656,31 +748,49 @@ impl TurnRequestProcessor {
                     personality: params.personality,
                 },
             )
-            .await?;
+            .await?
+        };
 
-        let submission = thread
-            .start_or_steer_turn(
-                TurnInputRequest::new(input)
-                    .with_thread_settings(thread_settings)
-                    .on_start(TurnStartOptions {
-                        turn_trigger: params.turn_trigger,
-                        parent_turn_id: params.parent_turn_id,
-                        initiating_agent_path: None,
-                        root_turn_id: params.root_turn_id,
-                        final_output_json_schema: params.output_schema,
-                        service_tier: params.service_tier_for_turn,
-                        cyber_access_program: params.cyber_access_program.map(Into::into),
-                    })
-                    .with_additional_context(additional_context)
-                    .with_responses_metadata(params.responsesapi_client_metadata)
-                    .with_trace(self.request_trace_context(&request_id).await),
-            )
-            .await
-            .map_err(|err| {
-                let error = internal_error(format!("failed to submit turn input: {err}"));
-                self.track_error_response(&request_id, &error, /*error_type*/ None);
-                error
-            })?;
+        let input_request = TurnInputRequest::new(input)
+            .with_thread_settings(thread_settings)
+            .on_start(TurnStartOptions {
+                turn_trigger: params.turn_trigger,
+                parent_turn_id: params.parent_turn_id,
+                initiating_agent_path: None,
+                root_turn_id: params.root_turn_id,
+                final_output_json_schema: params.output_schema,
+                service_tier: params.service_tier_for_turn,
+                cyber_access_program: params.cyber_access_program.map(Into::into),
+            })
+            .with_additional_context(additional_context)
+            .with_responses_metadata(params.responsesapi_client_metadata)
+            .with_trace(self.request_trace_context(&request_id).await);
+        let submission = if admission == TurnAdmissionMode::IdleOnly {
+            thread
+                .start_turn_if_idle(input_request)
+                .await
+                .map(|submission| match submission {
+                    StartIfIdleSubmission::Started {
+                        turn_id,
+                        root_turn_id,
+                    } => TurnInputSubmission::Started {
+                        turn_id,
+                        root_turn_id,
+                    },
+                    StartIfIdleSubmission::NotSubmitted { reason } => {
+                        TurnInputSubmission::NotSubmitted { reason }
+                    }
+                })
+        } else if admission == TurnAdmissionMode::Heartbeat {
+            thread.submit_heartbeat(input_request).await
+        } else {
+            thread.start_or_steer_turn(input_request).await
+        }
+        .map_err(|err| {
+            let error = internal_error(format!("failed to submit turn input: {err}"));
+            self.track_error_response(&request_id, &error, /*error_type*/ None);
+            error
+        })?;
         let (turn_id, root_turn_id, started) = match submission {
             TurnInputSubmission::Started {
                 turn_id,
@@ -691,6 +801,17 @@ impl TurnRequestProcessor {
                 root_turn_id,
             } => (turn_id, root_turn_id, false),
             TurnInputSubmission::NotSubmitted { reason } => {
+                if admission != TurnAdmissionMode::Explicit
+                    && matches!(
+                        reason,
+                        NotSubmittedReason::NotIdle
+                            | NotSubmittedReason::PendingTriggerTurn
+                            | NotSubmittedReason::PlanMode
+                            | NotSubmittedReason::ActiveTurnNotSteerable { .. }
+                    )
+                {
+                    return Ok(None);
+                }
                 let error = if reason == NotSubmittedReason::ServerDraining {
                     crate::error_code::server_draining_error()
                 } else {
@@ -731,7 +852,7 @@ impl TurnRequestProcessor {
             duration_ms: None,
         };
 
-        Ok(TurnStartResponse { turn })
+        Ok(Some(TurnStartResponse { turn }))
     }
 
     async fn build_environment_override(

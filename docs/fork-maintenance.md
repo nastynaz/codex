@@ -40,6 +40,11 @@ branch, upload diagnostics, and open/update one maintenance issue. An agent can
 repair the candidate; it must rerun the same checks. No autonomous repair agent
 or personal model credentials are installed in GitHub Actions.
 
+Integration normalizes only local workspace version entries in `Cargo.lock`;
+external dependency versions and checksums are preserved. Focused app-server
+tests disable host managed-configuration loading so a developer machine's policy
+service cannot stall unrelated schema tests. Tests run serially without retries.
+
 ## Weekly update
 
 Prerequisites: Git, Python 3.11+, GitHub CLI authentication, Rust/rustup,
@@ -57,7 +62,9 @@ builds a complete release package, and runs an isolated live model/TUI test.
 It leaves your current installation running. The live test creates a one-minute
 one-shot, reopens its TUI, checks the cyan footer and delivery, then verifies
 schedule/footer removal. It uses a private temporary copy of your existing
-file-based login, deletes that copy, and stops its own server. It consumes model
+file-based login with the refresh token removed, deletes that copy, and stops its
+own server. It cannot rotate your main login's refresh token. If the access token
+has expired, refresh your normal Codex login/session and retry. It consumes model
 usage. Change the model with `--model MODEL`. Credentials in a keyring without
 an `auth.json` file need a separate supported login preparation first.
 

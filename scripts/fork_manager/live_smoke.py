@@ -11,11 +11,15 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import tempfile
 import termios
 import time
 
 import pyte
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from common import copy_smoke_auth
 
 parser = argparse.ArgumentParser()
 parser.add_argument("binary")
@@ -42,7 +46,10 @@ for name in ("auth.json", "models_cache.json"):
         / name
     )
     if source.exists():
-        shutil.copyfile(source, home / name)
+        if name == "auth.json":
+            copy_smoke_auth(source, home / name)
+        else:
+            shutil.copyfile(source, home / name)
         (home / name).chmod(0o600)
 (home / "config.toml").write_text(f'''model = {json.dumps(args.model)}
 model_reasoning_effort = "low"

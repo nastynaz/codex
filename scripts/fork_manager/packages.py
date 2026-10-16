@@ -112,6 +112,8 @@ def verify_receipt(package, *, live=True):
 
 def smoke(package, model=None):
     receipt = verify_receipt(package, live=False)
+    receipt["live_passed"] = False
+    atomic_json(receipt_path(package), receipt)
     # Defer this dependency until the live test. Management/help/status need only Python.
     model = model or config()["smoke_model"]
     evidence = state_root() / "evidence" / package.name

@@ -86,6 +86,15 @@ def clean(root):
         )
 
 
+def copy_smoke_auth(source, destination):
+    """Use the current access token without rotating the main login's refresh token."""
+    auth = json.loads(source.read_text())
+    if isinstance(auth.get("tokens"), dict):
+        auth["tokens"]["refresh_token"] = ""
+    atomic_json(destination, auth)
+    destination.chmod(0o600)
+
+
 @contextmanager
 def installation_lock():
     state = state_root()

@@ -19,6 +19,26 @@ from fork_manager.common import (
 
 
 class PackageTests(unittest.TestCase):
+    def test_smoke_auth_cannot_rotate_the_original_refresh_token(self):
+        from fork_manager.common import copy_smoke_auth
+
+        original = self.root / "auth.json"
+        isolated = self.root / "isolated-auth.json"
+        original.write_text(
+            json.dumps(
+                {"tokens": {"access_token": "access", "refresh_token": "refresh"}}
+            )
+        )
+        copy_smoke_auth(original, isolated)
+        self.assertEqual(
+            json.loads(original.read_text())["tokens"]["refresh_token"], "refresh"
+        )
+        self.assertEqual(
+            json.loads(isolated.read_text())["tokens"],
+            {"access_token": "access", "refresh_token": ""},
+        )
+        self.assertEqual(isolated.stat().st_mode & 0o777, 0o600)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -278,6 +298,28 @@ cli.chmod(0o755)
         self.assertEqual(receipt["version"], result["version"])
         self.assertFalse(receipt["live_passed"])
         self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_lock_normalization_preserves_external_packages_and_is_idempotent(self):
+        rust = self.repo / "codex-rs"
+        (rust / "member").mkdir(parents=True)
+        (rust / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["member"]\n[workspace.package]\nversion = "1.2.3"\n'
+        )
+        (rust / "member/Cargo.toml").write_text(
+            '[package]\nname = "example"\nversion.workspace = true\n'
+        )
+        lock = rust / "Cargo.lock"
+        lock.write_text(
+            'version = 4\n\n[[package]]\nname = "example"\nversion = "0.0.0"\n\n[[package]]\nname = "example"\nversion = "0.0.0"\nsource = "registry+https://example.invalid"\nchecksum = "unchanged"\n'
+        )
+        self.assertTrue(source.normalize_workspace_lock(self.repo))
+        import tomllib
+
+        entries = tomllib.loads(lock.read_text())["package"]
+        self.assertEqual(entries[0]["version"], "1.2.3")
+        self.assertEqual(entries[1]["version"], "0.0.0")
+        self.assertEqual(entries[1]["checksum"], "unchanged")
+        self.assertFalse(source.normalize_workspace_lock(self.repo))
 
     def test_dirty_worktree_and_non_release_tags_are_rejected(self):
         with self.assertRaises(Failure):

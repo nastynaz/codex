@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 from .common import Failure, atomic_json, clean, config, git, run, state_root
@@ -26,7 +27,11 @@ def check(root):
         cwd=root,
     )
     run(["git", "diff", "--check"], cwd=root)
-    env = {**os.environ, "RUST_MIN_STACK": "8388608"}
+    env = {
+        **os.environ,
+        "RUST_MIN_STACK": "8388608",
+        "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
+    }
     for packages, target, expression in [
         (["codex-tui", "codex-core"], ["--lib"], LIB_FILTER),
         (["codex-app-server", "codex-core"], ["--test", "all"], INTEGRATION_FILTER),
@@ -39,7 +44,7 @@ def check(root):
             "--retries",
             "0",
             "--test-threads",
-            "2",
+            "1",
         ]
         for package in packages:
             args.extend(["-p", package])
@@ -155,6 +160,8 @@ def finish(root, tag, upstream, previous_head=None):
     cfg.update(upstream_base=upstream, upstream_tag=tag)
     atomic_json(root / "fork-config.json", cfg)
     run(["git", "add", "fork-config.json"], cwd=root)
+    if normalize_workspace_lock(root):
+        run(["git", "add", "codex-rs/Cargo.lock"], cwd=root)
     run(["git", "commit", "-m", f"fork: Integrate upstream {tag}"], cwd=root)
     return {
         "status": "candidate_ready",
@@ -165,6 +172,50 @@ def finish(root, tag, upstream, previous_head=None):
         "worktree": str(root),
         "next": f"codex-fork check --source {root}",
     }
+
+
+def normalize_workspace_lock(root):
+    """Release tags change workspace versions without refreshing their lock entries.
+
+    Preserve every external package/checksum. Only named, source-less workspace
+    entries are updated, using their actual package manifests.
+    """
+    rust = root / "codex-rs"
+    manifest = rust / "Cargo.toml"
+    lock = rust / "Cargo.lock"
+    if not manifest.exists() or not lock.exists():
+        return False
+    workspace = tomllib.loads(manifest.read_text())["workspace"]
+    versions = {}
+    for member in workspace.get("members", []):
+        for directory in rust.glob(member):
+            package = tomllib.loads((directory / "Cargo.toml").read_text())["package"]
+            version = package["version"]
+            if isinstance(version, dict):
+                if version != {"workspace": True}:
+                    raise Failure(
+                        f"Unsupported package version declaration: {directory}"
+                    )
+                version = workspace["package"]["version"]
+            versions[package["name"]] = version
+    original = lock.read_text()
+    blocks = re.split(r"(?m)(?=^\[\[package\]\]$)", original)
+    for index, block in enumerate(blocks):
+        if not block.startswith("[[package]]"):
+            continue
+        package = tomllib.loads(block)["package"][0]
+        if "source" not in package and package["name"] in versions:
+            blocks[index] = re.sub(
+                r'(?m)^version = "[^"]+"$',
+                f'version = "{versions[package["name"]]}"',
+                block,
+                count=1,
+            )
+    updated = "".join(blocks)
+    if updated != original:
+        lock.write_text(updated)
+        return True
+    return False
 
 
 def publish(root):

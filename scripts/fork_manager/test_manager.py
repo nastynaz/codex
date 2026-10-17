@@ -18,6 +18,38 @@ from fork_manager.common import (
 )
 
 
+class PublishTests(unittest.TestCase):
+    def test_workflow_discovery_retries_empty_and_missing_results(self):
+        workflows = [
+            {
+                "id": 123,
+                "path": ".github/workflows/fork-maintenance.yml",
+                "state": "active",
+            }
+        ]
+        with (
+            patch.object(
+                source, "run", side_effect=["", "[]", json.dumps(workflows)]
+            ) as run,
+            patch.object(source.time, "sleep") as sleep,
+        ):
+            self.assertEqual(source.published_workflows("test/repo"), workflows)
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_workflow_discovery_failure_preserves_publication_context(self):
+        for output in ["", "null", "{}", '[{"id": 123}]']:
+            with (
+                self.subTest(output=output),
+                patch.object(source, "run", return_value=output),
+                patch.object(source.time, "sleep"),
+                self.assertRaisesRegex(
+                    Failure, "Source push and repository settings succeeded"
+                ),
+            ):
+                source.published_workflows("test/repo")
+
+
 class PackageTests(unittest.TestCase):
     def test_smoke_auth_cannot_rotate_the_original_refresh_token(self):
         from fork_manager.common import copy_smoke_auth
@@ -235,6 +267,7 @@ class SyncTests(unittest.TestCase):
         args = list(args)
         if args[:3] == ["git", "fetch", "--no-tags"]:
             args[3] = str(self.repo)
+        kwargs["capture"] = True  # Expected fixture conflicts are not user failures.
         return self.original_run(args, **kwargs)
 
     def test_sync_uses_a_candidate_and_preserves_caller(self):

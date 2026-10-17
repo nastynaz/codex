@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 
@@ -251,23 +252,7 @@ def publish(root):
             "--enable-issues",
         ]
     )
-    workflows = json.loads(
-        run(
-            [
-                "gh",
-                "workflow",
-                "list",
-                "--repo",
-                cfg["repository"],
-                "--all",
-                "--limit",
-                "200",
-                "--json",
-                "id,path,state",
-            ],
-            capture=True,
-        )
-    )
+    workflows = published_workflows(cfg["repository"])
     for workflow in workflows:
         if (
             Path(workflow["path"]).name != "fork-maintenance.yml"
@@ -313,3 +298,52 @@ def publish(root):
         + cfg["repository"]
         + " --workflow fork-maintenance.yml",
     }
+
+
+def published_workflows(repository):
+    """Allow GitHub time to discover workflows after the first branch push."""
+    for attempt in range(3):
+        output = run(
+            [
+                "gh",
+                "workflow",
+                "list",
+                "--repo",
+                repository,
+                "--all",
+                "--limit",
+                "200",
+                "--json",
+                "id,path,state",
+            ],
+            capture=True,
+        )
+        try:
+            workflows = json.loads(output)
+        except json.JSONDecodeError:
+            workflows = None
+        if (
+            isinstance(workflows, list)
+            and all(
+                isinstance(item, dict)
+                and all(key in item for key in ("id", "path", "state"))
+                for item in workflows
+            )
+            and any(
+                item["path"] == ".github/workflows/fork-maintenance.yml"
+                for item in workflows
+            )
+        ):
+            return workflows
+        if attempt < 2:
+            print(
+                "Waiting for GitHub to discover the published workflows...",
+                file=sys.stderr,
+            )
+            time.sleep(3)
+    raise Failure(
+        f"Source push and repository settings succeeded for {repository}, but "
+        "GitHub workflow discovery is not ready or returned invalid data. "
+        f"Inspect with: gh workflow list --repo {repository} --all --json id,path,state. "
+        "No local Codex installation was changed."
+    )
